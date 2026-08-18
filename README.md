@@ -122,13 +122,16 @@ báo lỗi “không tìm thấy node id / hết hạn token”: lấy request m
 ## Đóng gói lại exe
 
 ```bash
+pip install nuitka zstandard    # zstandard = nén payload one-file
 python make_icon.py    # (nếu muốn đổi icon) sinh icon.ico
 python -m nuitka --onefile --assume-yes-for-downloads --enable-plugin=pyside6 \
   --windows-console-mode=disable --windows-icon-from-ico=icon.ico \
   --include-data-files=icon.ico=icon.ico \
   --output-filename=ReelsViewScanner.exe --output-dir=build_nuitka scan_reels_gui.py
 ```
-Cần Nuitka + một C compiler (đang dùng TDM-GCC). Build PySide6 mất vài phút.
+Cần Nuitka + một C compiler (đang dùng MSVC `cl`, TDM-GCC cũng chạy được).
+Build PySide6 mất vài phút. Thiếu `zstandard` thì exe ra ~77 MB, có thì nén còn
+**~23 MB** (Nuitka báo `compression ratio 29.75%`).
 
 ## File
 
