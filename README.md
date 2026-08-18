@@ -23,7 +23,8 @@ one-file, không hiện cửa sổ console, có icon riêng. Chép đi đâu cũ
 2. Chỉnh **“Luồng”** (số Page quét song song, mặc định 8) nếu cần.
 3. Bấm **“Quét”**. Mỗi Page xong hiện ngay ở sidebar; click để xem lưới reels.
 4. Chọn **bộ lọc** ở hàng dưới thanh công cụ và kiểu **sắp xếp** ở sidebar (xem mục dưới).
-5. Bấm **“Xuất CSV”** để lưu kết quả (view, mô tả, URL, thumbnail…).
+5. Bấm **“Xuất CSV”** để lưu kết quả — ra **2 file**: chi tiết từng reel và bảng
+   xếp hạng Page (xem mục dưới).
 
 Bấm vào thumbnail để mở reel trên trình duyệt. Danh sách ID, số luồng, kiểu
 sắp xếp và bộ lọc được nhớ trong `config.json`.
@@ -65,6 +66,31 @@ Dải nút ngay dưới chữ `PAGES` chọn cách xếp thứ tự danh sách P
 - Page lỗi luôn nằm cuối danh sách.
 - Danh sách tự sắp lại ngay trong lúc quét, mỗi khi có Page mới xong.
 - **Xuất CSV** ghi theo đúng thứ tự đang hiển thị.
+
+## Xuất CSV
+
+Một lần bấm **“Xuất CSV”** ghi ra **2 file** cạnh nhau (chọn tên `reels_x.csv` thì
+được `reels_x.csv` + `reels_x_rank.csv`):
+
+| File | Nội dung |
+|------|----------|
+| `<tên>.csv` | **Chi tiết từng reel** — Page ID, Author, Rank, Views, Views(num), Description, URL, Video ID, Thumbnail |
+| `<tên>_rank.csv` | **Xếp hạng Page** — mỗi Page 1 dòng, để theo dõi tổng quan |
+
+Cột của file `_rank`: `Hạng`, `Page ID`, `Tên Page`, `Số reel`, `View đỉnh`,
+`View đỉnh (số)`, `Tổng view`, `Tổng view (số)`, `View TB/reel`, `Reel mới nhất`,
+`Link reel đỉnh`, `Mô tả reel đỉnh`, `Trạng thái`.
+
+- View có **2 cột**: bản đọc nhanh (`1.2M`) và bản số thuần (`1200000`).
+- Hạng xếp theo tiêu chí đang chọn ở sidebar (**View đỉnh** / **Tổng view**);
+  chế độ “Mặc định” thì xếp theo view đỉnh. Page lỗi xuống cuối, bỏ trống hạng
+  và ghi lý do ở cột `Trạng thái`.
+- Cả 2 file đều tôn trọng **bộ lọc** đang bật.
+
+> **Mọi ô đều ghi dạng text** (`="..."`) để Excel/Google Sheets không tự ép kiểu:
+> Page ID / Video ID không thành `1.00064E+14`, số view không bị format lại, ngày
+> không bị đổi theo locale, mô tả bắt đầu bằng `=` `+` `-` `@` không bị hiểu là
+> công thức. Muốn tính toán trên cột số thì dùng `=VALUE(ô)` hoặc Text-to-Columns.
 
 ## Cơ chế (2 bước, viết thẳng trong `fb_reels.py`)
 

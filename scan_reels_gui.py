@@ -727,6 +727,8 @@ class MainWindow(QMainWindow):
         top.addWidget(self.threads_box)
 
         self.export_btn = QPushButton("Xuất CSV")
+        self.export_btn.setToolTip("Xuất 2 file: chi tiết từng reel và "
+                                   "<tên>_rank.csv — bảng xếp hạng Page (view đỉnh, tổng view…)")
         self.export_btn.clicked.connect(self.export_csv)
         self.export_btn.setEnabled(False)
         top.addWidget(self.export_btn)
@@ -983,6 +985,25 @@ class MainWindow(QMainWindow):
                             + (f"  Đang lọc: {note}." if note else ""))
 
     # ---- export ----
+    @staticmethod
+    def _as_text(v) -> str:
+        """Bọc mọi giá trị thành text cho Excel — không ô nào bị ép kiểu (ID dài
+        thành 1.23E+14, view thành số, ngày thành date, mô tả thành công thức…)."""
+        s = str(v if v is not None else "")
+        s = s.replace("\r", " ").replace("\n", " ").strip()   # formula 1 dòng cho an toàn
+        return '="{}"'.format(s.replace('"', '""')) if s else ""
+
+    def _write_row(self, w, values):
+        w.writerow([self._as_text(v) for v in values])
+
+    def _rank_key(self, it: PageItem):
+        """Xếp hạng theo tiêu chí đang chọn; chế độ 'Mặc định' thì xếp theo view đỉnh."""
+        by_total = self.sort_mode == "total"
+        return (0 if it.res.ok else 1,
+                -(it.total if by_total else it.peak),
+                -(it.peak if by_total else it.total),
+                it.order)
+
     def export_csv(self):
         if not self.results:
             return
@@ -990,7 +1011,12 @@ class MainWindow(QMainWindow):
             self, "Lưu CSV", f"reels_{datetime.now():%Y%m%d_%H%M}.csv", "CSV (*.csv)")
         if not path:
             return
-        with open(path, "w", newline="", encoding="utf-8-sig") as f:
+        base, ext = os.path.splitext(path)
+        ext = ext or ".csv"
+        detail_path, rank_path = base + ext, f"{base}_rank{ext}"
+
+        # file 1 — chi tiết từng reel
+        with open(detail_path, "w", newline="", encoding="utf-8-sig") as f:
             w = csv.writer(f)
             w.writerow(["Page ID", "Author", "Rank", "Views", "Views(num)",
                         "Description", "URL", "Video ID", "Thumbnail"])
@@ -998,13 +1024,40 @@ class MainWindow(QMainWindow):
             for it in sorted(self.items, key=self._sort_key):
                 res = it.res
                 if not res.ok:
-                    w.writerow([res.page_id, "", "", "", "", res.error, "", "", ""])
+                    self._write_row(w, [res.page_id, "", "", "", "", res.error, "", "", ""])
                     continue
                 for i, r in enumerate(it.reels, 1):
-                    w.writerow([res.page_id, res.author, i, r.views_text, r.views_num,
-                                r.description, r.url, r.video_id, r.thumbnail])
+                    self._write_row(w, [res.page_id, res.author, i,
+                                        r.views_text, r.views_num, r.description,
+                                        r.url, r.video_id, r.thumbnail])
+
+        # file 2 — bảng xếp hạng Page, mỗi Page 1 dòng
+        with open(rank_path, "w", newline="", encoding="utf-8-sig") as f:
+            w = csv.writer(f)
+            w.writerow(["Hạng", "Page ID", "Tên Page", "Số reel",
+                        "View đỉnh", "View đỉnh (số)", "Tổng view", "Tổng view (số)",
+                        "View TB/reel", "Reel mới nhất", "Link reel đỉnh",
+                        "Mô tả reel đỉnh", "Trạng thái"])
+            for i, it in enumerate(sorted(self.items, key=self._rank_key), 1):
+                res = it.res
+                if not res.ok:
+                    self._write_row(w, ["", res.page_id, res.author, 0,
+                                        "", 0, "", 0, 0, "", "", "", res.error])
+                    continue
+                top = max(it.reels, key=lambda r: r.views_num, default=None)
+                newest = max((r.created for r in it.reels), default=0)
+                avg = round(it.total / len(it.reels)) if it.reels else 0
+                self._write_row(w, [i, res.page_id, res.author, len(it.reels),
+                                    human(it.peak), it.peak, human(it.total), it.total, avg,
+                                    f"{datetime.fromtimestamp(newest):%Y-%m-%d}" if newest else "",
+                                    top.url if top else "", top.description if top else "", "OK"])
+
         note = self._filter_note()
-        self.status.setText(f"Đã xuất{f' ({note})' if note else ''}: {path}")
+        rank_by = "tổng view" if self.sort_mode == "total" else "view đỉnh"
+        self.status.setText(
+            f"Đã xuất{f' ({note})' if note else ''}: "
+            f"{os.path.basename(detail_path)} (chi tiết reel) + "
+            f"{os.path.basename(rank_path)} (xếp hạng theo {rank_by}) → {os.path.dirname(path)}")
 
 
 def _resource(name):
