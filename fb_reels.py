@@ -3,8 +3,9 @@ Lõi Reels View Scanner — viết thẳng logic của app.py vào tool.
 
 Luồng (giống app.py):
   get_pfbid(page_id): GET facebook.com/<page_id> -> cắt node id 'owner_reels'
-  get_view(pfbid):    POST graphql -> JSON 10 reel đầu
-  scan_page(page_id): nối 2 bước + parse ra view / mô tả / thumbnail.
+  get_view(pfbid):    POST graphql -> JSON 10 reel (truyền cursor để lấy trang sau)
+  scan_page(page_id): nối 2 bước, phân trang tới khi đủ `limit` reel, parse ra
+                      view / mô tả / thumbnail.
 """
 from __future__ import annotations
 
@@ -13,6 +14,11 @@ import re
 from dataclasses import dataclass, field
 
 import requests
+
+# GraphQL trả tối đa 10 reel/request dù đặt count lớn hơn -> muốn nhiều hơn thì
+# phân trang bằng cursor (xem next_cursor / scan_page).
+REELS_PER_REQUEST = 10
+MAX_REQUESTS = 30          # chốt trần để không lặp vô hạn nếu FB cứ trả has_next_page
 
 
 # ---------------------------------------------------------------------------
@@ -47,7 +53,7 @@ def cut_string(string: str, start: str, end: str) -> str:
     return string.split(start)[1].split(end)[0]
 
 
-def get_pfbid(page_id: str, timeout: int = 30) -> str:
+def get_pfbid(page_id: str, timeout: int = 30, session: requests.Session | None = None) -> str:
     url = f"https://www.facebook.com/{page_id}"
     headers = {
         'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
@@ -70,7 +76,8 @@ def get_pfbid(page_id: str, timeout: int = 30) -> str:
         'viewport-width': '1162',
         'Cookie': 'datr=M21caiohl8GXrQtHeKqsz8xs; sb=M21cakGEXPH-rOSfHTQte9Ti; wd=1162x922; fr=1zAFgKbq8NwYRjKJ5.AWcRutA3EkDtZvz1J4V0hkF8gH5c3d-4Ao1jN4vx_XGTUW4OpUc.BqWD1W..AAA.0.0.BqWD1W.AWfzut87we3d2X857fsHBDdsuVk; ps_l=1; ps_n=1'
     }
-    response = requests.get(url, headers=headers, timeout=timeout)
+    get = (session or requests).get
+    response = get(url, headers=headers, timeout=timeout)
     response.raise_for_status()
     try:
         return cut_string(response.text, '[{"tab_key":"owner_reels","id":"', '"')
@@ -84,9 +91,19 @@ def get_pfbid(page_id: str, timeout: int = 30) -> str:
 # ---------------------------------------------------------------------------
 # Bước 2: node id -> JSON reels  [logic app.py: get_view]
 # ---------------------------------------------------------------------------
-def get_view(pfbid: str, timeout: int = 30) -> str:
+def get_view(
+    pfbid: str,
+    cursor: str = "",
+    count: int = REELS_PER_REQUEST,
+    timeout: int = 30,
+    session: requests.Session | None = None,
+) -> str:
+    """1 request GraphQL. Lần đầu không có cursor; các lần sau truyền
+    end_cursor của response trước (chèn ngay sau "count", đúng như FB gửi)."""
     url = "https://www.facebook.com/api/graphql/"
-    variables = '{"count":10,"renderLocation":null,"scale":1,"useDefaultActor":false,"id":"' + pfbid + '","__relay_internal__pv__FBReels_deprecate_short_form_video_context_gkrelayprovider":false,"__relay_internal__pv__FBReelsMediaFooter_comet_enable_reels_ads_gkrelayprovider":true,"__relay_internal__pv__FBUnifiedVideoMediaContentContainer_comet_reels_video_footer_defer_loading_gkrelayprovider":false,"__relay_internal__pv__FBUnifiedVideoMediaContentContainer_comet_video_document_picture_in_picture_gkrelayprovider":false,"__relay_internal__pv__FBUnifiedVideoMediaContentContainer_enable_chapters_pill_gkrelayprovider":false,"__relay_internal__pv__ShouldEnableBakedInTextUnifiedVideorelayprovider":false,"__relay_internal__pv__FBUnifiedVideoMediaHeaderControls_enable_chapters_pill_gkrelayprovider":false,"__relay_internal__pv__FBUnifiedVideoMediaFooter_comet_enable_reels_ads_gkrelayprovider":true,"__relay_internal__pv__FBUnifiedVideoMediaFooter_enable_meta_ai_pill_gkrelayprovider":false,"__relay_internal__pv__FBUnifiedVideoMediaFooter_enable_ai_embodiment_chat_pill_gkrelayprovider":false,"__relay_internal__pv__FBUnifiedVideoMediaFooter_enable_group_character_ai_info_pill_gkrelayprovider":true,"__relay_internal__pv__FBUnifiedVideoMediaFooter_enable_video_augment_pills_gkrelayprovider":false,"__relay_internal__pv__FBUnifiedVideoFeedbackBar_comet_reels_save_button_gkrelayprovider":false,"__relay_internal__pv__usePushPipEngagementCounts_comet_video_document_picture_in_picture_gkrelayprovider":false,"__relay_internal__pv__FBReels_enable_view_dubbed_audio_type_gkrelayprovider":false,"__relay_internal__pv__FBUnifiedVideoMenu_fb_reels_ranking_debug_tool_gkrelayprovider":false}'
+    cursor_part = '"cursor":' + json.dumps(cursor) + ',' if cursor else ''
+    variables = ('{"count":' + str(count) + ',' + cursor_part
+                 + '"renderLocation":null,"scale":1,"useDefaultActor":false,"id":"' + pfbid + '","__relay_internal__pv__FBReels_deprecate_short_form_video_context_gkrelayprovider":false,"__relay_internal__pv__FBReelsMediaFooter_comet_enable_reels_ads_gkrelayprovider":true,"__relay_internal__pv__FBUnifiedVideoMediaContentContainer_comet_reels_video_footer_defer_loading_gkrelayprovider":false,"__relay_internal__pv__FBUnifiedVideoMediaContentContainer_comet_video_document_picture_in_picture_gkrelayprovider":false,"__relay_internal__pv__FBUnifiedVideoMediaContentContainer_enable_chapters_pill_gkrelayprovider":false,"__relay_internal__pv__ShouldEnableBakedInTextUnifiedVideorelayprovider":false,"__relay_internal__pv__FBUnifiedVideoMediaHeaderControls_enable_chapters_pill_gkrelayprovider":false,"__relay_internal__pv__FBUnifiedVideoMediaFooter_comet_enable_reels_ads_gkrelayprovider":true,"__relay_internal__pv__FBUnifiedVideoMediaFooter_enable_meta_ai_pill_gkrelayprovider":false,"__relay_internal__pv__FBUnifiedVideoMediaFooter_enable_ai_embodiment_chat_pill_gkrelayprovider":false,"__relay_internal__pv__FBUnifiedVideoMediaFooter_enable_group_character_ai_info_pill_gkrelayprovider":true,"__relay_internal__pv__FBUnifiedVideoMediaFooter_enable_video_augment_pills_gkrelayprovider":false,"__relay_internal__pv__FBUnifiedVideoFeedbackBar_comet_reels_save_button_gkrelayprovider":false,"__relay_internal__pv__usePushPipEngagementCounts_comet_video_document_picture_in_picture_gkrelayprovider":false,"__relay_internal__pv__FBReels_enable_view_dubbed_audio_type_gkrelayprovider":false,"__relay_internal__pv__FBUnifiedVideoMenu_fb_reels_ranking_debug_tool_gkrelayprovider":false}')
     payload = {
         "av": "0",
         "__aaid": "0",
@@ -140,9 +157,28 @@ def get_view(pfbid: str, timeout: int = 30) -> str:
         'x-fb-lsd': 'AdSDcZVb_kw8axuZk0JzJHl4wAk',
         'Cookie': 'datr=M21caiohl8GXrQtHeKqsz8xs; sb=M21cakGEXPH-rOSfHTQte9Ti; wd=1162x922; fr=1zAFgKbq8NwYRjKJ5.AWcRutA3EkDtZvz1J4V0hkF8gH5c3d-4Ao1jN4vx_XGTUW4OpUc.BqWD1W..AAA.0.0.BqWD1W.AWfzut87we3d2X857fsHBDdsuVk'
     }
-    response = requests.request("POST", url, headers=headers, data=payload, timeout=timeout)
-    response.raise_for_status()
-    return response.text
+    post = (session or requests).post
+    response = post(url, headers=headers, data=payload, timeout=timeout, stream=True)
+    try:
+        response.raise_for_status()
+        return _read_main_payload(response)
+    finally:
+        response.close()
+
+
+def _read_main_payload(response: requests.Response) -> str:
+    """FB stream nhiều dòng JSON: dòng đầu là payload chính (chứa data.node +
+    page_info), các dòng sau là chunk @defer của từng reel — nặng ~10 MB mà tool
+    không dùng. Đọc xong dòng đầu là ngắt kết nối luôn cho nhanh."""
+    buf = bytearray()
+    for chunk in response.iter_content(chunk_size=65536):
+        if not chunk:
+            continue
+        buf.extend(chunk)
+        nl = buf.find(b"\n")
+        if nl != -1:
+            return buf[:nl].decode("utf-8", "replace")
+    return bytes(buf).decode("utf-8", "replace")
 
 
 # ---------------------------------------------------------------------------
@@ -206,7 +242,35 @@ def _pick_thumbnail(sfvc: dict, node: dict) -> str:
     return ""
 
 
-def parse_reels_response(data: dict, page_id: str = "", limit: int = 10) -> PageResult:
+def _shorts(data: dict) -> dict:
+    """Connection reels ở data.node.aggregated_fb_shorts."""
+    return (((data or {}).get("data") or {}).get("node") or {}).get("aggregated_fb_shorts") or {}
+
+
+def next_cursor(data: dict) -> str:
+    """Cursor để xin trang kế tiếp — rỗng nếu đã hết reel.
+
+    CHÚ Ý: response có rất nhiều field tên 'cursor', đừng lấy bừa:
+      - data.node.aggregated_fb_shorts.edges[i].cursor  -> cursor của TỪNG reel
+        (10 cái), không phải cursor phân trang.
+      - các chunk @defer phía sau còn cursor của connection con (comment,
+        reaction…) — hoàn toàn không liên quan.
+    Cursor phân trang đúng duy nhất là:
+        data.node.aggregated_fb_shorts.page_info.end_cursor
+    và chỉ dùng khi page_info.has_next_page == true.
+    """
+    page_info = _shorts(data).get("page_info") or {}
+    if not page_info.get("has_next_page"):
+        return ""
+    end = page_info.get("end_cursor") or ""
+    if end:
+        return end
+    # dự phòng: còn trang mà thiếu end_cursor thì dùng cursor của edge cuối
+    edges = _shorts(data).get("edges") or []
+    return (edges[-1].get("cursor") or "") if edges else ""
+
+
+def parse_reels_response(data: dict, page_id: str = "", limit: int | None = None) -> PageResult:
     result = PageResult(page_id=page_id)
     try:
         node = data["data"]["node"]
@@ -220,7 +284,7 @@ def parse_reels_response(data: dict, page_id: str = "", limit: int = 10) -> Page
         return result
 
     edges = ((node or {}).get("aggregated_fb_shorts") or {}).get("edges") or []
-    for edge in edges[:limit]:
+    for edge in (edges if limit is None else edges[:limit]):
         rnode = (edge.get("profile_reel_node") or {}).get("node") or {}
         sfvc = rnode.get("short_form_video_context") or {}
         video = sfvc.get("video") or {}
@@ -260,23 +324,69 @@ def parse_reels_response(data: dict, page_id: str = "", limit: int = 10) -> Page
 # ---------------------------------------------------------------------------
 # Quét 1 Page (nối 2 bước)
 # ---------------------------------------------------------------------------
-def scan_page(page_id: str, limit: int = 10, timeout: int = 30) -> PageResult:
+def scan_page(page_id: str, limit: int = REELS_PER_REQUEST, timeout: int = 30,
+              should_stop=None) -> PageResult:
+    """Quét 1 Page, phân trang tới khi đủ `limit` reel hoặc Page hết reel.
+
+    Mỗi request chỉ được 10 reel nên limit=50 -> 5 request nối nhau bằng cursor.
+    `should_stop()` (nếu truyền) trả True thì dừng sớm, giữ lại phần đã lấy.
+    """
     page_id = page_id.strip()
+    session = requests.Session()
     try:
-        pfbid = get_pfbid(page_id, timeout=timeout)
-    except requests.RequestException as e:
-        return PageResult(page_id=page_id, ok=False, error=f"Lỗi mạng (lấy node id): {e}")
-    except ValueError as e:
-        return PageResult(page_id=page_id, ok=False, error=str(e))
+        try:
+            pfbid = get_pfbid(page_id, timeout=timeout, session=session)
+        except requests.RequestException as e:
+            return PageResult(page_id=page_id, ok=False, error=f"Lỗi mạng (lấy node id): {e}")
+        except ValueError as e:
+            return PageResult(page_id=page_id, ok=False, error=str(e))
 
-    try:
-        text = get_view(pfbid, timeout=timeout)
-        data = _first_json(text)
-    except requests.RequestException as e:
-        return PageResult(page_id=page_id, ok=False, node_id=pfbid, error=f"Lỗi mạng: {e}")
-    except ValueError as e:
-        return PageResult(page_id=page_id, ok=False, node_id=pfbid, error=str(e))
+        res = PageResult(page_id=page_id, node_id=pfbid)
+        seen: set[str] = set()
+        cursor = ""
+        for _ in range(MAX_REQUESTS):
+            try:
+                text = get_view(pfbid, cursor=cursor, timeout=timeout, session=session)
+                data = _first_json(text)
+            except requests.RequestException as e:
+                err = f"Lỗi mạng: {e}"
+            except ValueError as e:
+                err = str(e)
+            else:
+                err = ""
 
-    res = parse_reels_response(data, page_id=page_id, limit=limit)
-    res.node_id = pfbid
-    return res
+            if err:
+                # trang đầu lỗi thì coi như Page lỗi; lỗi giữa đường thì giữ
+                # phần đã lấy được và ghi chú lại.
+                if not res.reels:
+                    return PageResult(page_id=page_id, ok=False, node_id=pfbid, error=err)
+                res.error = f"Chỉ lấy được {len(res.reels)} reel — {err}"
+                break
+
+            part = parse_reels_response(data, page_id=page_id)
+            if part.author and not res.author:
+                res.author = part.author
+            for reel in part.reels:
+                key = reel.video_id or reel.url or reel.thumbnail
+                if key and key in seen:
+                    continue      # FB thỉnh thoảng trả trùng ở mép trang
+                seen.add(key)
+                res.reels.append(reel)
+                if len(res.reels) >= limit:
+                    break
+
+            if len(res.reels) >= limit:
+                break
+            if not part.reels and not res.reels:
+                # trang đầu rỗng -> báo đúng lỗi parse được
+                return part if not part.ok else res
+            cursor = next_cursor(data)
+            if not cursor or (should_stop and should_stop()):
+                break
+
+        if not res.reels:
+            res.ok = False
+            res.error = res.error or "Không tìm thấy reel nào (Page không có reel?)."
+        return res
+    finally:
+        session.close()

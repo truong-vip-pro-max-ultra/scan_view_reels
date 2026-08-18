@@ -36,14 +36,16 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from fb_reels import PageResult, Reel, scan_page
+from fb_reels import REELS_PER_REQUEST, PageResult, Reel, scan_page
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "config.json")
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
-# Số reel lấy được mỗi Page — GraphQL của FB trả tối đa 10/lần, muốn hơn phải phân trang.
-MAX_REELS = 10
+# Số reel lấy mỗi Page — FB trả tối đa 10 reel/request nên số lớn hơn sẽ được
+# phân trang bằng cursor (mỗi 10 reel = thêm 1 request).
+DEFAULT_MAX_REELS = 10
+MAX_REELS_CAP = 300
 
 # ---------------------------------------------------------------------------
 # Palette — nhẹ, không dùng nền tối nặng cho label
@@ -169,7 +171,8 @@ class ScanWorker(QThread):
         if self._stop:
             return PageResult(page_id=pid, ok=False, error="Đã dừng.")
         try:
-            return scan_page(pid, limit=self.limit)
+            # should_stop: bấm Dừng thì thôi phân trang tiếp, giữ phần đã lấy
+            return scan_page(pid, limit=self.limit, should_stop=lambda: self._stop)
         except Exception as e:  # noqa: BLE001
             return PageResult(page_id=pid, ok=False, error=f"Lỗi: {e}")
 
@@ -217,10 +220,10 @@ class Stepper(QFrame):
     """Ô chỉnh số dạng pill:  [ −  8  + ]."""
     valueChanged = Signal(int)
 
-    def __init__(self, value=8, lo=1, hi=100, parent=None):
+    def __init__(self, value=8, lo=1, hi=100, step=1, parent=None):
         super().__init__(parent)
         self.setObjectName("stepper")
-        self._v, self.lo, self.hi = value, lo, hi
+        self._v, self.lo, self.hi, self.step = value, lo, hi, step
         self.setFixedHeight(34)
         h = QHBoxLayout(self)
         h.setContentsMargins(2, 0, 2, 0)
@@ -235,13 +238,13 @@ class Stepper(QFrame):
             b.setAutoRepeatInterval(45)
         self.lbl = QLabel(str(value))
         self.lbl.setAlignment(Qt.AlignCenter)
-        self.lbl.setFixedWidth(34)
+        self.lbl.setFixedWidth(max(34, 10 + 10 * len(str(hi))))
         self.lbl.setStyleSheet(f"color:{TEXT}; font-size:14px; font-weight:700;")
         h.addWidget(self.minus)
         h.addWidget(self.lbl)
         h.addWidget(self.plus)
-        self.minus.clicked.connect(lambda: self._set(self._v - 1))
-        self.plus.clicked.connect(lambda: self._set(self._v + 1))
+        self.minus.clicked.connect(lambda: self._set(self._v - self.step))
+        self.plus.clicked.connect(lambda: self._set(self._v + self.step))
 
     def value(self):
         return self._v
@@ -264,7 +267,7 @@ class Stepper(QFrame):
         self.plus.setEnabled(self._v < self.hi)
 
     def wheelEvent(self, e):
-        self._set(self._v + (1 if e.angleDelta().y() > 0 else -1))
+        self._set(self._v + (self.step if e.angleDelta().y() > 0 else -self.step))
 
     def setEnabled(self, on):  # noqa: N802
         super().setEnabled(on)
@@ -589,6 +592,7 @@ class MainWindow(QMainWindow):
         self.pool = QThreadPool.globalInstance()
         self.page_ids: list[str] = []
         self.threads: int = 8
+        self.max_reels: int = DEFAULT_MAX_REELS
         self.sort_mode: str = "peak"
         self.filter_mode: str = "all"     # all | count | days
         self.filter_count: int = 5        # N video gần nhất
@@ -606,6 +610,8 @@ class MainWindow(QMainWindow):
                 cfg = json.load(open(CONFIG_PATH, encoding="utf-8"))
                 self.page_ids = cfg.get("page_ids", [])
                 self.threads = int(cfg.get("threads", 8))
+                self.max_reels = max(REELS_PER_REQUEST, min(
+                    MAX_REELS_CAP, int(cfg.get("max_reels", DEFAULT_MAX_REELS))))
                 self.sort_mode = cfg.get("sort_mode", "peak")
                 self.filter_mode = cfg.get("filter_mode", "all")
                 self.filter_count = int(cfg.get("filter_count", 5))
@@ -616,6 +622,7 @@ class MainWindow(QMainWindow):
     def _save_config(self):
         try:
             json.dump({"page_ids": self.page_ids, "threads": self.threads,
+                       "max_reels": self.max_reels,
                        "sort_mode": self.sort_mode, "filter_mode": self.filter_mode,
                        "filter_count": self.filter_count, "filter_days": self.filter_days},
                       open(CONFIG_PATH, "w", encoding="utf-8"),
@@ -626,6 +633,12 @@ class MainWindow(QMainWindow):
     def _on_threads_changed(self, v):
         self.threads = v
         self._save_config()
+
+    def _on_max_reels_changed(self, v):
+        self.max_reels = v
+        self._save_config()
+        self._sync_filter_widgets()   # chế độ "N video gần nhất" theo trần mới
+        self.filter_seg.setToolTip(self._filter_tip())
 
     def _on_sort_changed(self, mode):
         self.sort_mode = mode
@@ -653,7 +666,8 @@ class MainWindow(QMainWindow):
         self.filter_step.setVisible(show)
         self.filter_unit.setVisible(show)
         if self.filter_mode == "count":
-            self.filter_step.configure(1, MAX_REELS, self.filter_count)
+            self.filter_step.configure(1, self.max_reels, self.filter_count)
+            self.filter_count = self.filter_step.value()
             self.filter_unit.setText("video gần nhất")
         elif self.filter_mode == "days":
             self.filter_step.configure(1, 365, self.filter_days)
@@ -675,6 +689,11 @@ class MainWindow(QMainWindow):
             cutoff = time.time() - self.filter_days * 86400
             return [r for r in reels if r.created and r.created >= cutoff]
         return reels
+
+    def _filter_tip(self) -> str:
+        return (f"Tất cả: dùng toàn bộ reel quét được (tối đa {self.max_reels}/Page)\n"
+                "Video gần nhất: chỉ N reel mới nhất\n"
+                "Theo ngày: chỉ reel đăng trong N ngày trở lại")
 
     def _filter_note(self) -> str:
         if self.filter_mode == "count":
@@ -717,6 +736,18 @@ class MainWindow(QMainWindow):
         self.id_btn.clicked.connect(self.open_ids)
         top.addWidget(self.id_btn)
 
+        lbl_reels = self._muted("Reel/Page")
+        lbl_reels.setToolTip("Số reel quét tối đa mỗi Page")
+        top.addWidget(lbl_reels)
+        self.reels_box = Stepper(self.max_reels, REELS_PER_REQUEST, MAX_REELS_CAP,
+                                 step=REELS_PER_REQUEST)
+        self.reels_box.setToolTip(
+            f"Số reel lấy tối đa mỗi Page. Facebook trả {REELS_PER_REQUEST} reel/request "
+            f"nên mỗi {REELS_PER_REQUEST} reel là thêm 1 lượt gọi — đặt cao thì lâu hơn.\n"
+            "Page ít reel hơn thì tự dừng khi hết.")
+        self.reels_box.valueChanged.connect(self._on_max_reels_changed)
+        top.addWidget(self.reels_box)
+
         lbl_thread = self._muted("Luồng")
         lbl_thread.setToolTip("Số Page quét song song")
         top.addWidget(lbl_thread)
@@ -751,10 +782,7 @@ class MainWindow(QMainWindow):
             [("all", "Tất cả"), ("count", "Video gần nhất"), ("days", "Theo ngày")],
             self.filter_mode)
         self.filter_seg.setFixedWidth(310)
-        self.filter_seg.setToolTip(
-            f"Tất cả: dùng toàn bộ {MAX_REELS} reel quét được\n"
-            "Video gần nhất: chỉ N reel mới nhất\n"
-            "Theo ngày: chỉ reel đăng trong N ngày trở lại")
+        self.filter_seg.setToolTip(self._filter_tip())
         self.filter_seg.changed.connect(self._on_filter_mode_changed)
         flt.addWidget(self.filter_seg)
 
@@ -957,9 +985,10 @@ class MainWindow(QMainWindow):
         self.scan_btn.setText("Dừng")
         self.id_btn.setEnabled(False)
         self.threads_box.setEnabled(False)
+        self.reels_box.setEnabled(False)
         self.export_btn.setEnabled(False)
 
-        self.worker = ScanWorker(self.page_ids, limit=MAX_REELS, workers=self.threads)
+        self.worker = ScanWorker(self.page_ids, limit=self.max_reels, workers=self.threads)
         self.worker.page_done.connect(self._on_page)
         self.worker.progress.connect(self._on_progress)
         self.worker.finished_all.connect(self._on_finished)
@@ -978,6 +1007,7 @@ class MainWindow(QMainWindow):
         self.scan_btn.setText("Quét")
         self.id_btn.setEnabled(True)
         self.threads_box.setEnabled(True)
+        self.reels_box.setEnabled(True)
         ok = sum(1 for r in self.results if r.ok)
         self.export_btn.setEnabled(bool(self.results))
         note = self._filter_note()

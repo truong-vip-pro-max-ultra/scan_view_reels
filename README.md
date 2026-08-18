@@ -1,7 +1,7 @@
 # Reels View Scanner
 
-Tool desktop (PySide6) quét **view · mô tả · thumbnail** của 10 reel đầu mỗi
-Facebook Page. Nhập danh sách **ID Page** (mỗi dòng 1 ID) → quét song song hàng loạt,
+Tool desktop (PySide6) quét **view · mô tả · thumbnail** reels của Facebook Page
+(10–300 reel mỗi Page, tự phân trang). Nhập danh sách **ID Page** (mỗi dòng 1 ID) → quét song song hàng loạt,
 xem theo kiểu master–detail (danh sách Page bên trái, lưới reels bên phải).
 
 ![icon](icon.png)
@@ -20,14 +20,15 @@ one-file, không hiện cửa sổ console, có icon riêng. Chép đi đâu cũ
 
 1. Bấm **“Nhập ID Page”**, dán danh sách — mỗi dòng 1 ID Page (số) hoặc username.
    VD: `100051080350208` hoặc `HungVlogOfficial`.
-2. Chỉnh **“Luồng”** (số Page quét song song, mặc định 8) nếu cần.
+2. Chỉnh **“Reel/Page”** (số reel tối đa mỗi Page, 10–300, mặc định 10) và
+   **“Luồng”** (số Page quét song song, mặc định 8) nếu cần.
 3. Bấm **“Quét”**. Mỗi Page xong hiện ngay ở sidebar; click để xem lưới reels.
 4. Chọn **bộ lọc** ở hàng dưới thanh công cụ và kiểu **sắp xếp** ở sidebar (xem mục dưới).
 5. Bấm **“Xuất CSV”** để lưu kết quả — ra **2 file**: chi tiết từng reel và bảng
    xếp hạng Page (xem mục dưới).
 
-Bấm vào thumbnail để mở reel trên trình duyệt. Danh sách ID, số luồng, kiểu
-sắp xếp và bộ lọc được nhớ trong `config.json`.
+Bấm vào thumbnail để mở reel trên trình duyệt. Danh sách ID, số reel/Page, số
+luồng, kiểu sắp xếp và bộ lọc được nhớ trong `config.json`.
 
 ## Lọc reel
 
@@ -35,8 +36,8 @@ Hàng **“Lọc”** ngay dưới thanh công cụ chọn tập reel được �
 
 | Chế độ | Ý nghĩa |
 |--------|---------|
-| **Tất cả** (mặc định) | Dùng toàn bộ 10 reel quét được |
-| **Video gần nhất** | Chỉ **N reel mới nhất** (ô số bên cạnh, 1–10) |
+| **Tất cả** (mặc định) | Dùng toàn bộ reel quét được |
+| **Video gần nhất** | Chỉ **N reel mới nhất** (ô số bên cạnh, 1 → “Reel/Page”) |
 | **Theo ngày** | Chỉ reel đăng **trong N ngày** trở lại (1–365) |
 
 - Lọc áp dụng **ngay lập tức**, không cần quét lại.
@@ -48,9 +49,10 @@ Hàng **“Lọc”** ngay dưới thanh công cụ chọn tập reel được �
 - Chế độ “Theo ngày” dựa vào `creation_time` của reel; reel không có mốc thời gian
   thì bỏ qua bước lọc này.
 
-> Mỗi Page chỉ quét được **10 reel** (GraphQL của Facebook trả tối đa 10/lần, muốn
-> nhiều hơn phải phân trang bằng `end_cursor`). Nên lọc “30 ngày” với Page đăng dày
-> có thể vẫn ra đủ 10 reel — đó là toàn bộ dữ liệu đang có, không phải lỗi lọc.
+> GraphQL của Facebook trả tối đa **10 reel/request**, nên đặt “Reel/Page” = 50 là
+> tool tự gọi 5 lượt nối nhau bằng `end_cursor` (đặt càng cao càng lâu). Page ít
+> reel hơn thì dừng sớm — số reel hiện ra là toàn bộ dữ liệu có được, không phải
+> lỗi lọc.
 
 ## Sắp xếp Page
 
@@ -97,13 +99,25 @@ Cột của file `_rank`: `Hạng`, `Page ID`, `Tên Page`, `Số reel`, `View �
 1. **Lấy node id:** GET `facebook.com/<page_id>` → cắt id ở
    `[{"tab_key":"owner_reels","id":"…"}]` (đã là Base64 `app_collection:pfbid…`).
 2. **Lấy view:** POST GraphQL `ProfileCometAppCollectionReelsRendererPaginationQuery`
-   (doc_id `27781898651406539`) với `variables.id` = node id → 10 reel đầu.
-3. **Parse** theo `data.node.aggregated_fb_shorts.edges[].profile_reel_node.node`:
+   (doc_id `27781898651406539`) với `variables.id` = node id → 10 reel.
+3. **Phân trang:** lần gọi đầu không có `cursor`; các lần sau chèn
+   `variables.cursor` = `end_cursor` của response trước, lặp tới khi đủ số reel
+   hoặc `has_next_page = false`.
+4. **Parse** theo `data.node.aggregated_fb_shorts.edges[].profile_reel_node.node`:
    - Mô tả: `message.text`
    - View: `short_form_video_context.play_count_reduced` (vd `219K`, `1.4M`)
    - Thumbnail: `short_form_video_context.video.first_frame_thumbnail`
 
-Quét nhiều Page chạy song song bằng `ThreadPoolExecutor` (số luồng cấu hình được).
+> **Cursor nào mới đúng:** response có rất nhiều field tên `cursor` —
+> `edges[i].cursor` là cursor của *từng reel*, các chunk `@defer` phía sau còn
+> cursor của connection con (comment, reaction…). Cursor phân trang **duy nhất
+> đúng** là `data.node.aggregated_fb_shorts.page_info.end_cursor`, và chỉ dùng
+> khi `page_info.has_next_page = true` (xem `next_cursor()` trong `fb_reels.py`).
+
+Quét nhiều Page chạy song song bằng `ThreadPoolExecutor` (số luồng cấu hình được);
+mỗi Page dùng 1 `requests.Session` để tái dùng kết nối khi phân trang, và mỗi
+response chỉ đọc **dòng JSON đầu** rồi ngắt (các chunk `@defer` phía sau nặng
+~10 MB mà tool không dùng).
 
 ## Hiệu năng & luồng
 
@@ -111,6 +125,11 @@ Quét nhiều Page chạy song song bằng `ThreadPoolExecutor` (số luồng c�
 - 100 Page: để **15–20 luồng** là cân bằng tốc độ/ổn định.
 - Đẩy quá cao (50–100) khi quét nhiều dễ bị rate-limit → nhiều Page báo lỗi;
   gặp vậy thì giảm luồng và quét lại.
+- **Reel/Page** ảnh hưởng trực tiếp tới thời gian: mỗi 10 reel = thêm 1 lượt gọi
+  cho *mỗi* Page (30 reel = 3 lượt). Đo thực tế: 11 Page × 30 reel, 11 luồng
+  ≈ **6.7 giây**; 9 Page × 30 reel, 9 luồng ≈ **6.1 giây**.
+- Page ít reel hơn trần đã đặt thì tự dừng sớm (`has_next_page = false`), không
+  tốn request thừa — VD đặt 30 mà Page có 28 reel thì chỉ gọi 3 lượt.
 
 ## Khi hết hạn token
 
@@ -138,9 +157,9 @@ Build PySide6 mất vài phút. Thiếu `zstandard` thì exe ra ~77 MB, có thì
 | File | Vai trò |
 |------|---------|
 | `scan_reels_gui.py` | Giao diện PySide6 — **chạy file này** |
-| `fb_reels.py` | Lõi: page_id → node id → view, parse (logic app.py viết thẳng ở đây) |
+| `fb_reels.py` | Lõi: page_id → node id → view, phân trang bằng cursor, parse (logic app.py viết thẳng ở đây) |
 | `app.py` | Request gốc (tham khảo / nguồn cookie-token) |
 | `make_icon.py` | Sinh `icon.ico` / `icon.png` |
 | `icon.ico`, `icon.png` | Icon của app/exe |
-| `config.json` | Tự sinh — lưu danh sách ID, số luồng, kiểu sắp xếp (`sort_mode`) & bộ lọc (`filter_mode`, `filter_count`, `filter_days`) |
+| `config.json` | Tự sinh — lưu danh sách ID, số luồng, số reel/Page (`max_reels`), kiểu sắp xếp (`sort_mode`) & bộ lọc (`filter_mode`, `filter_count`, `filter_days`) |
 | `build_nuitka/ReelsViewScanner.exe` | Bản đóng gói one-file |
