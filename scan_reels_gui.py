@@ -39,7 +39,23 @@ from PySide6.QtWidgets import (
 from fb_reels import REELS_PER_REQUEST, PageResult, Reel, scan_page
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CONFIG_PATH = os.path.join(HERE, "config.json")
+
+
+def _config_dir() -> str:
+    """Nơi ghi config.json — phải nằm cạnh file chạy được, không phải cạnh mã.
+
+    Bản Nuitka one-file giải nén vào thư mục tạm rồi xoá lúc thoát, nên lấy theo
+    __file__ thì cấu hình mất sau mỗi lần đóng app. Đã đo trên Nuitka 4.1.3:
+    trong exe one-file `sys.executable` cũng trỏ vào python.exe ở thư mục tạm,
+    chỉ `sys.argv[0]` mới là đường dẫn exe gốc người dùng bấm.
+    """
+    if getattr(sys, "frozen", False) or "__compiled__" in globals():
+        exe = sys.argv[0] or sys.executable
+        return os.path.dirname(os.path.abspath(exe))
+    return HERE
+
+
+CONFIG_PATH = os.path.join(_config_dir(), "config.json")
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
 # Số reel lấy mỗi Page — FB trả tối đa 10 reel/request nên số lớn hơn sẽ được
@@ -607,7 +623,9 @@ class MainWindow(QMainWindow):
     def _load_config(self):
         if os.path.exists(CONFIG_PATH):
             try:
-                cfg = json.load(open(CONFIG_PATH, encoding="utf-8"))
+                # utf-8-sig: file sửa tay bằng Notepad/PowerShell hay có BOM,
+                # đọc bằng utf-8 thuần sẽ lỗi và mất sạch cấu hình.
+                cfg = json.load(open(CONFIG_PATH, encoding="utf-8-sig"))
                 self.page_ids = cfg.get("page_ids", [])
                 self.threads = int(cfg.get("threads", 8))
                 self.max_reels = max(REELS_PER_REQUEST, min(

@@ -14,7 +14,8 @@ python scan_reels_gui.py
 
 ## Hoặc chạy bản đóng gói
 `build_nuitka/ReelsViewScanner.exe` — file exe độc lập (không cần cài Python),
-one-file, không hiện cửa sổ console, có icon riêng. Chép đi đâu cũng chạy.
+one-file, không hiện cửa sổ console, có icon riêng. Chép đi đâu cũng chạy; nó
+tạo `config.json` ngay cạnh exe nên chép cả 2 file là giữ nguyên cấu hình.
 
 ## Cách dùng
 
@@ -28,7 +29,9 @@ one-file, không hiện cửa sổ console, có icon riêng. Chép đi đâu cũ
    xếp hạng Page (xem mục dưới).
 
 Bấm vào thumbnail để mở reel trên trình duyệt. Danh sách ID, số reel/Page, số
-luồng, kiểu sắp xếp và bộ lọc được nhớ trong `config.json`.
+luồng, kiểu sắp xếp và bộ lọc được nhớ trong `config.json` — file này nằm **cạnh
+file đang chạy**: cạnh `scan_reels_gui.py` khi chạy mã nguồn, cạnh
+`ReelsViewScanner.exe` khi chạy bản đóng gói.
 
 ## Lọc reel
 
@@ -161,5 +164,5 @@ Build PySide6 mất vài phút. Thiếu `zstandard` thì exe ra ~77 MB, có thì
 | `app.py` | Request gốc (tham khảo / nguồn cookie-token) |
 | `make_icon.py` | Sinh `icon.ico` / `icon.png` |
 | `icon.ico`, `icon.png` | Icon của app/exe |
-| `config.json` | Tự sinh — lưu danh sách ID, số luồng, số reel/Page (`max_reels`), kiểu sắp xếp (`sort_mode`) & bộ lọc (`filter_mode`, `filter_count`, `filter_days`) |
+| `config.json` | Tự sinh **cạnh file đang chạy** (mã nguồn hoặc exe) — lưu danh sách ID, số luồng, số reel/Page (`max_reels`), kiểu sắp xếp (`sort_mode`) & bộ lọc (`filter_mode`, `filter_count`, `filter_days`) |
 | `build_nuitka/ReelsViewScanner.exe` | Bản đóng gói one-file |
